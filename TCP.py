@@ -2,6 +2,9 @@ import queue
 import socket
 import json
 import threading
+import random
+
+TTL = None
 
 
 class TCPHeader():
@@ -20,8 +23,8 @@ class TCPHeader():
             "SYN": self.SYN,
             "FIN": self.FIN,
             "ACK": self.ACK,
-            "SEQ": self.SEQ.hex() if self.SEQ else None,
-            "SEQACK": self.SEQACK.hex() if self.SEQACK else None,
+            "SEQ": self.SEQ.to_bytes(4, 'big').hex(),  
+            "SEQACK": self.SEQACK.to_bytes(4, 'big').hex() if self.SEQACK is not None else None,
             "LEN": self.LEN,
             "CHECKSUM": self.CHECKSUM,
             "PAYLOAD": self.PAYLOAD if isinstance(self.PAYLOAD, str) else self.PAYLOAD.hex() if self.PAYLOAD else None
@@ -29,13 +32,13 @@ class TCPHeader():
 
         return json.dumps(json_data).encode()
     
-    def to_string(self, data):
+    def from_bytes(self, data):
         data = json.loads(data)
         self.SYN = data["SYN"]
         self.FIN = data['FIN']
         self.ACK = data['ACK']
-        self.SEQ = bytes.fromhex(data["SEQ"]) if data["SEQ"] else None,
-        self.SEQACK =bytes.fromhex(data["SEQACK"]) if data["SEQACK"] else None,
+        self.SEQ = int.from_bytes(bytes.fromhex(data["SEQ"]), 'big') if data["SEQ"] else None
+        self.SEQACK = int.from_bytes(bytes.fromhex(data["SEQACK"]), 'big') if data["SEQACK"] else None,
         self.LEN = data['LEN']
         self.CHECKSUM = data['CHECKSUM']
         self.PAYLOAD = data['PAYLOAD']
@@ -101,45 +104,86 @@ class ByteBuffer():
 class TCPSocket():
     def __init__(self):
         self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.SEQ =  None
         self._send_to = None
         self._recv_from = None
         self.connections = {}
-        self.accept_buffer = ByteBuffer()
+        self.buffer = ByteBuffer()
+
+
+    
+    def handler(self):
+        while True:
+            data, addr = self.udp_socket.recvfrom(1024)
+            if addr not in self.connections:
+                self.buffer.add_data(data, addr)
+            else:
+                self.connections[addr]['buffer'].add_data(data)
 
     def bind(self, address):
         self.udp_socket.bind(address)
 
 
     def accept(self):
+        threading.Thread(target=self.handler, daemon=True).start()
+
         while True:
-            data  = self.accept_buffer.read_data(1024)
+            data, addr = self.buffer.read_data(1024)
+            header = TCPHeader().from_bytes(data)
+
+            if header.SYN == 1 and header.ACK == 0:
+                self.SEQ = random.randint(0, 0xFFFFFFFF)
+                SEQACK = header.SEQ + 1
+                response = TCPHeader(SYN=1, ACK=1, SEQ=self.SEQ ,SEQACK=SEQACK)
+                
+                buffer = ByteBuffer()
+                self.connections[addr] = {'buffer': buffer, "socket": socket}
+
+                socket = TCPSocket()
+                socket.buffer = buffer
+                socket.SEQ = self.SEQ
+                socket._recv_from = addr
+              
+                socket.send(response)
+
+               
+
     
 
 
     def connect(self,  address:(str, int)):
-        pass
+        SEQ = random.randint(0, 0xFFFFFFFF)
+        header = TCPHeader(SYN=1, ACK=0, SEQ=SEQ, SEQACK=0)
+        self._send_to = address
 
+        self.send(header)
 
-    def recv():
-        raise NotImplementedError()
+        data, addr =  self.recv()
+        # data, addr = self.buffer.read_data(1024)
+        header = TCPHeader().from_bytes(data)
+        
+        if header.SYN == 1 and header.ACK == 1:  # This is a SYN-ACK packet
+            ack_header = TCPHeader(ACK=1)
+
+    def recv(self):
+        address = self._recv_from
+        data = self.buffer.read_data()
+        data = TCPHeader.from_bytes(data)
+
     
 
 
-    def send():
-        raise NotImplementedError()
+    def send(self, data):
+        address = self._send_to
+        self.udp_socket.sendto(data, address)
     
 
+    def sendall():
+        raise  NotImplementedError()
 
-    def handle_recv(self):
-        while True:
-            data, addr = self.udp_socket.recvfrom(1024)
-            if addr not in self.connections:
-                self.accept_buffer.add_data(data)
-            else:
-                self.connections[addr]['buffer'].add_data(data)
 
     def close():
-        pass
+        raise  NotImplementedError()
 
 
 

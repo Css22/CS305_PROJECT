@@ -13,7 +13,9 @@ TCP_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 TCP_socket.bind(address)
 
 TCP_socket.accept()
+TCP_socket.send()
 TCP_socket.recv()
+TCP_socket.se
 # udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 # udp_socket.accept()
 # udp_socket.connect(address)
