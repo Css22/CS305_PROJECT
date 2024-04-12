@@ -51,11 +51,39 @@ class ByteBuffer():
         self.current_size = 0 
     
     def add_data(self, data):
-        pass
+        if not isinstance(data, bytes):
+            raise ValueError("Data must be of type bytes.")
+        
+        data_length = len(data)
+        if self.current_size + data_length > self.max_size:
 
-    def read_data(self, length):
-        pass
+            allowable_size = self.max_size - self.current_size
+            if allowable_size > 0:
+                data = data[:allowable_size]
+                self.queue.put(data)
+                self.current_size += allowable_size
 
+        else:
+            self.queue.put(data)
+            self.current_size += data_length
+
+    def read_data(self, length=None):
+        if length is None or length > self.max_read:
+            length = self.max_read
+
+        data_read = bytes()
+        while length > 0 and not self.queue.empty():
+            data_chunk = self.queue.get()
+            if len(data_chunk) <= length:
+                data_read += data_chunk
+                length -= len(data_chunk)
+                self.current_size -= len(data_chunk)
+            else:
+                data_read += data_chunk[:length]
+                self.queue.put(data_chunk[length:])
+                self.current_size -= length
+                break
+        return data_read
 
 class TCPSocket():
     def __init__(self):
@@ -145,6 +173,15 @@ if __name__ == '__main__':
     address = (ip, port)
     a = TCPSocket()
 
+
+
+    a = TCPHeader()
+    a.PAYLOAD = 'tesadasdas'
+    
+    buffer = ByteBuffer()
+    buffer.add_data(a.to_bytes())
+    
+    print(buffer.read_data())
     # a.bind(address)
 
 
@@ -160,5 +197,3 @@ if __name__ == '__main__':
         #     client_socket.send(data)  # Echo back the received data
 
         # client_socket.close()  # 关闭连接
-
-    server_socket.close()
