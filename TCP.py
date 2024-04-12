@@ -1,9 +1,7 @@
-import struct
+import queue
 import socket
 import json
-# 构建TCP 数据 header
-
-
+import random
 
 class TCPHeader():
     def __init__(self, SYN=None, FIN=None, ACK=None, SEQ=None, SEQACK=None, LEN=None, CHECKSUM=None, PAYLOAD=None)  -> None:
@@ -17,14 +15,6 @@ class TCPHeader():
         self.PAYLOAD = PAYLOAD
 
     def to_bytes(self):
-        # 序列化
-        # control_bits = (self.SYN << 2) | (self.FIN << 1) | self.ACK
-        # header = struct.pack('!B3x4s4sLH', control_bits, self.SEQ, self.SEQACK, self.LEN, self.CHECKSUM)
-        # if self.PAYLOAD:
-        #     payload = self.PAYLOAD.encode() 
-        #     return header + payload
-        # else:
-        #     return header
         json_data =  {
             "SYN": self.SYN,
             "FIN": self.FIN,
@@ -36,10 +26,9 @@ class TCPHeader():
             "PAYLOAD": self.PAYLOAD if isinstance(self.PAYLOAD, str) else self.PAYLOAD.hex() if self.PAYLOAD else None
         }
 
-        return json.dumps(json_data)
+        return json.dumps(json_data).encode()
     
     def to_string(self, data):
-        # 反序列化
         data = json.loads(data)
         self.SYN = data["SYN"]
         self.FIN = data['FIN']
@@ -53,33 +42,78 @@ class TCPHeader():
         return self
 
 
+
+class ByteBuffer():
+    def __init__(self, max_size = 212992, max_read = 1024):
+        self.max_size = max_size
+        self.max_read = max_read
+        self.queue = queue.Queue()
+        self.current_size = 0 
+    
+    def add_data(self, data):
+        pass
+
+    def read_data(self, length):
+        pass
+
+
 class TCPSocket():
-    def __init__(self, rate=None) -> None:
+    def __init__(self):
         self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self._rate = rate
         self._send_to = None
         self._recv_from = None
+        self.connections = {}
+        self.accept_buffer = bytearray(212992) 
 
 
-    def listen(self, address):
+    def bind(self, address):
         self.udp_socket.bind(address)
-        while True:
-            data, addr = self.udp_socket.recvfrom(1024)
-          
+
+
+    def accept(self):
+        if addr not in self.TCPsocket:  
+
             tcpheader = TCPHeader().to_string(data.decode())
+            self.TCPsocket[addr] = 'test'
+ 
+            response_tcpheader = TCPHeader()
+           
+            random_num = random.getrandbits(32)
+            seq_num = random_num.to_bytes(4, 'big')
 
-            print(tcpheader.PAYLOAD)
+            response_tcpheader.SYN = 1
+            response_tcpheader.ACK = 1
+            response_tcpheader.SEQ = seq_num
+            response_tcpheader.SEQACK = int.to_bytes(int.from_bytes(response_tcpheader.SEQ) + 1)
 
-    def accept(self,  address:(str, int)):
+            self.TCPsocket[addr] = TCPSocket()
+            self.TCPsocket[addr].SEQ = seq_num
+            self.TCPsocket[addr].udp_socket.connect(address)
+            self.TCPsocket[addr].send(response_tcpheader.to_bytes().encode())
+
+            data, addr = self.udp_socket.recvfrom(1024)
+
+        else:
+            raise NameError("link Error")
     
-        raise NotImplementedError()
-    
 
 
-    def connect():
-        raise NotImplementedError()
+    def connect(self,  address:(str, int)):
 
-    
+        random_num = random.getrandbits(32)
+        seq_num = random_num.to_bytes(4, 'big')
+        self.SEQ = seq_num
+
+        tcpheader = TCPHeader()
+        tcpheader.SYN = 1
+        tcpheader.SEQ = seq_num
+        tcpheader.SEQACK = 0
+
+        self.TCPsocket[addr].udp_socket.connect(address)
+        self.TCPsocket[addr].send(tcpheader.to_bytes())
+
+
+        data, addr = self.udp_socket.recvfrom(1024)
 
 
     def recv():
@@ -90,6 +124,13 @@ class TCPSocket():
     def send():
         raise NotImplementedError()
     
+
+
+    def handle_recv(self):
+        while True:
+            data, addr = self.udp_socket.recvfrom(1024)
+            if addr not in self.connections:
+                self.accept_buffer
 
 
     def close():
@@ -104,4 +145,20 @@ if __name__ == '__main__':
     address = (ip, port)
     a = TCPSocket()
 
-    a.listen(address)
+    # a.bind(address)
+
+
+    # while True:
+    #     client_socket, addr = a.accept()  
+    #     print(f"Connected by {addr}")
+
+        # while True:
+        #     data = client_socket.recv(1024)
+        #     if not data:
+        #         break
+        #     print(f"Received {data.decode()} from {addr}")
+        #     client_socket.send(data)  # Echo back the received data
+
+        # client_socket.close()  # 关闭连接
+
+    server_socket.close()

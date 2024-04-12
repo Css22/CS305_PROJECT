@@ -4,8 +4,19 @@ import socket
 port = 12345
 ip = "127.0.0.1"
 address = (ip, port)
-udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-udp_socket.connect(address)
+# a = TCPSocket()
+
+# a.connect(address)
+
+
+TCP_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+TCP_socket.bind(address)
+
+TCP_socket.accept()
+TCP_socket.recv()
+# udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+# udp_socket.accept()
+# udp_socket.connect(address)
 
 
 content = "test"
