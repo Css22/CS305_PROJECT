@@ -1,7 +1,8 @@
 import queue
 import socket
 import json
-import random
+import threading
+
 
 class TCPHeader():
     def __init__(self, SYN=None, FIN=None, ACK=None, SEQ=None, SEQACK=None, LEN=None, CHECKSUM=None, PAYLOAD=None)  -> None:
@@ -49,41 +50,53 @@ class ByteBuffer():
         self.max_read = max_read
         self.queue = queue.Queue()
         self.current_size = 0 
+        self.cond = threading.Condition() 
     
     def add_data(self, data):
-        if not isinstance(data, bytes):
-            raise ValueError("Data must be of type bytes.")
+        with self.cond:
+            if not isinstance(data, bytes):
+                raise ValueError("Data must be of type bytes.")
         
-        data_length = len(data)
-        if self.current_size + data_length > self.max_size:
+            data_length = len(data)
+            if self.current_size + data_length > self.max_size:
 
-            allowable_size = self.max_size - self.current_size
+                allowable_size = self.max_size - self.current_size
+
             if allowable_size > 0:
                 data = data[:allowable_size]
                 self.queue.put(data)
                 self.current_size += allowable_size
+                self.cond.notify_all()
 
-        else:
-            self.queue.put(data)
-            self.current_size += data_length
+            else:
+                self.queue.put(data)
+                self.current_size += data_length
+                self.cond.notify_all()
 
     def read_data(self, length=None):
-        if length is None or length > self.max_read:
-            length = self.max_read
+        with self.cond:
+            if length is None or length > self.max_read:
+                length = self.max_read
 
-        data_read = bytes()
-        while length > 0 and not self.queue.empty():
-            data_chunk = self.queue.get()
-            if len(data_chunk) <= length:
-                data_read += data_chunk
-                length -= len(data_chunk)
-                self.current_size -= len(data_chunk)
-            else:
-                data_read += data_chunk[:length]
-                self.queue.put(data_chunk[length:])
-                self.current_size -= length
-                break
+            data_read = bytes()
+            while length > 0:
+                while self.queue.empty():
+                    self.cond.wait()
+
+                data_chunk = self.queue.get()
+                if len(data_chunk) <= length:
+                    data_read += data_chunk
+                    length -= len(data_chunk)
+                    self.current_size -= len(data_chunk)
+                else:
+                    data_read += data_chunk[:length]
+                    self.queue.put(data_chunk[length:])
+                    self.current_size -= length
+                    break
         return data_read
+
+
+
 
 class TCPSocket():
     def __init__(self):
@@ -91,57 +104,20 @@ class TCPSocket():
         self._send_to = None
         self._recv_from = None
         self.connections = {}
-        self.accept_buffer = bytearray(212992) 
-
+        self.accept_buffer = ByteBuffer()
 
     def bind(self, address):
         self.udp_socket.bind(address)
 
 
     def accept(self):
-        if addr not in self.TCPsocket:  
-
-            tcpheader = TCPHeader().to_string(data.decode())
-            self.TCPsocket[addr] = 'test'
- 
-            response_tcpheader = TCPHeader()
-           
-            random_num = random.getrandbits(32)
-            seq_num = random_num.to_bytes(4, 'big')
-
-            response_tcpheader.SYN = 1
-            response_tcpheader.ACK = 1
-            response_tcpheader.SEQ = seq_num
-            response_tcpheader.SEQACK = int.to_bytes(int.from_bytes(response_tcpheader.SEQ) + 1)
-
-            self.TCPsocket[addr] = TCPSocket()
-            self.TCPsocket[addr].SEQ = seq_num
-            self.TCPsocket[addr].udp_socket.connect(address)
-            self.TCPsocket[addr].send(response_tcpheader.to_bytes().encode())
-
-            data, addr = self.udp_socket.recvfrom(1024)
-
-        else:
-            raise NameError("link Error")
+        while True:
+            data  = self.accept_buffer.read_data(1024)
     
 
 
     def connect(self,  address:(str, int)):
-
-        random_num = random.getrandbits(32)
-        seq_num = random_num.to_bytes(4, 'big')
-        self.SEQ = seq_num
-
-        tcpheader = TCPHeader()
-        tcpheader.SYN = 1
-        tcpheader.SEQ = seq_num
-        tcpheader.SEQACK = 0
-
-        self.TCPsocket[addr].udp_socket.connect(address)
-        self.TCPsocket[addr].send(tcpheader.to_bytes())
-
-
-        data, addr = self.udp_socket.recvfrom(1024)
+        pass
 
 
     def recv():
@@ -158,8 +134,9 @@ class TCPSocket():
         while True:
             data, addr = self.udp_socket.recvfrom(1024)
             if addr not in self.connections:
-                self.accept_buffer
-
+                self.accept_buffer.add_data(data)
+            else:
+                self.connections[addr]['buffer'].add_data(data)
 
     def close():
         pass
@@ -179,9 +156,10 @@ if __name__ == '__main__':
     a.PAYLOAD = 'tesadasdas'
     
     buffer = ByteBuffer()
+    print(buffer.read_data())
     buffer.add_data(a.to_bytes())
     
-    print(buffer.read_data())
+  
     # a.bind(address)
 
 
