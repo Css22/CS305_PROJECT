@@ -3,7 +3,7 @@ import socket
 import json
 import threading
 import random
-
+import time
 TTL = None
 
 
@@ -109,23 +109,28 @@ class TCPSocket():
         self._recv_from = None
         self.connections = {}
         self.buffer = ByteBuffer()
-
+        self.TTL = None
+        self.table = {}
+        self.recv_data = ByteBuffer()
+        threading.Thread(target=self.handler, daemon=True).start()
 
     
-    def handler(self):
+    def buffer_handler(self):
         while True:
             data, addr = self.udp_socket.recvfrom(1024)
             if addr not in self.connections:
                 self.buffer.add_data(data, addr)
             else:
-                self.connections[addr]['buffer'].add_data(data)
+                self.connections[addr]['buffer'].add_data(data, addr)
+
+
 
     def bind(self, address):
         self.udp_socket.bind(address)
 
 
     def accept(self):
-        threading.Thread(target=self.handler, daemon=True).start()
+        threading.Thread(target=self.buffer_handler, daemon=True).start()
 
         while True:
             data, addr = self.buffer.read_data(1024)
@@ -166,22 +171,78 @@ class TCPSocket():
             ack_header = TCPHeader(ACK=1)
 
     def recv(self):
-        address = self._recv_from
-        data = self.buffer.read_data()
-        data = TCPHeader.from_bytes(data)
+        result = ""
+        while True:
+            address = self._recv_from
+            data, addr = self.recv_data.read_data()
+            tcpheader = TCPHeader.from_bytes(data)
+            result = result + tcpheader.PAYLOAD
+        return data
 
     
 
 
-    def send(self, data):
+    def send(self, tcpheader):
         address = self._send_to
-        self.udp_socket.sendto(data, address)
-    
+        self.udp_socket.sendto(tcpheader, address)
+
+        self.table[tcpheader.SEQ + len(tcpheader.PAYLOAD.encode())] = (tcpheader, 0)
+
+        
+        # threading.Thread(target=self.send_handler, daemon=True).start()
+        # threading.Thread(target=self.timeout_handler, daemon=True).start()
 
     def sendall():
+        # 这里需要完成整个重传的逻辑，比如哪些块要重传
         raise  NotImplementedError()
 
 
+    def handler(self):
+        # send 和 recv不能进行递归调用，统一在这里进行处理，因为send 和 recv本质是对等的，都是TCP协议。需要在handler中做的事情有
+
+        # 1. 我们会维护一个tcpheader的Table，保存着未被确认的tcpheader。
+        # 2. 确认收到的seqack 是可以确认我们的数据
+        # 3. 查询chacksum，以确定数据是否损坏，损坏的话调用send函数进行重传
+        # 4. 如果没有被confirm的TCP，直接重发。如果confirm的TCP，直接不管。（ACKSEQ == TCP.SEQ 情况下重发这个TCP， 如果ACKSEQ == TCP.SEQ + len() 这个TCP任务结束了）
+        while True:
+            data, addr = self.buffer.read_data(1024)
+            tcpheader = TCPHeader.from_bytes(data)
+
+            if self.checksum(tcpheader):
+                if tcpheader.SEQACK in self.table:
+                    del self.table[tcpheader.SEQACK]
+                    self.recv_data.add_data(data, addr)
+                else:
+                    for i in self.table.keys():
+                        #这里需要修改ACKSEQ为对方的SEQ+len(data)或者data为空的情况下，是SEQ+1
+                        if self.table[i][0].SEQ == tcpheader.SEQACK:
+                            old_tcpheader = self.table[i][0]
+                            if len(tcpheader.PAYLOAD) == 0:
+                                new_tcpheader = TCPHeader(SYN=old_tcpheader.SYN, FIN=old_tcpheader.FIN, ACK=old_tcpheader.ACK, SEQ=old_tcpheader.SEQ, SEQACK= tcpheader.SEQ + 1 , PAYLOAD=old_tcpheader.PAYLOAD)
+                            else:
+                                new_tcpheader = TCPHeader(SYN=old_tcpheader.SYN, FIN=old_tcpheader.FIN, ACK=old_tcpheader.ACK, SEQ=old_tcpheader.SEQ, SEQACK= tcpheader.SEQ + len(tcpheader.PAYLOAD.encode()) , PAYLOAD=old_tcpheader.PAYLOAD)
+                            self.send(new_tcpheader)
+                    else:
+                        continue
+            else:
+                error_response = TCPHeader(SYN=0, FIN=0, ACK=1, SEQ=self.SEQ, SEQACK=tcpheader.SEQ)
+                self.send(error_response)
+
+    def checksum(self, tcpheader: TCPHeader):
+        raise  NotImplementedError()
+
+    def timeout_handler(self):
+        while True:
+            for i in self.table.keys():
+                if self.table[i][1] >= self.TTL:
+                    self.send(self.table[i][0])
+                else:
+                    self.table[i][1] = self.table[i][1] + 1
+            time.sleep(1)
+
+    def set_TTL(self, value):
+        self.TTL = value
+        
     def close():
         raise  NotImplementedError()
 
