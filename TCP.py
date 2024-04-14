@@ -24,7 +24,7 @@ class TCPHeader():
             "FIN": self.FIN,
             "ACK": self.ACK,
             "SEQ": self.SEQ.to_bytes(4, 'big').hex(),  
-            "SEQACK": self.SEQACK.to_bytes(4, 'big').hex() if self.SEQACK is not None else None,
+            "SEQACK": self.SEQACK.to_bytes(4, 'big').hex(),
             "LEN": self.LEN,
             "CHECKSUM": self.CHECKSUM,
             "PAYLOAD": self.PAYLOAD if isinstance(self.PAYLOAD, str) else self.PAYLOAD.hex() if self.PAYLOAD else None
@@ -33,17 +33,25 @@ class TCPHeader():
         return json.dumps(json_data).encode()
     
     def from_bytes(self, data):
+        # if isinstance(data, bytes):
+        #     data = data.decode()
         data = json.loads(data)
         self.SYN = data["SYN"]
         self.FIN = data['FIN']
         self.ACK = data['ACK']
         self.SEQ = int.from_bytes(bytes.fromhex(data["SEQ"]), 'big') if data["SEQ"] else None
-        self.SEQACK = int.from_bytes(bytes.fromhex(data["SEQACK"]), 'big') if data["SEQACK"] else None,
+        self.SEQACK = int.from_bytes(bytes.fromhex(data["SEQACK"]), 'big') if data["SEQACK"] else None
         self.LEN = data['LEN']
         self.CHECKSUM = data['CHECKSUM']
         self.PAYLOAD = data['PAYLOAD']
 
         return self
+
+    def __str__(self) -> str:
+        """
+        Overwrite the toString function of this class
+        """
+        return f'SYN: {self.SYN}, FIN: {self.FIN}, ACK: {self.ACK}, SEQ: {self.SEQ}, SEQACK: {self.SEQACK}, LEN: {self.LEN}, CHECKSUM: {self.CHECKSUM}, PAYLOAD: {self.PAYLOAD}'
 
 
 
@@ -57,9 +65,9 @@ class ByteBuffer():
     
     def add_data(self, data):
         with self.cond:
-            if not isinstance(data, bytes):
-                raise ValueError("Data must be of type bytes.")
-        
+            # if not isinstance(data, bytes):
+            #     raise ValueError("Data must be of type bytes.")
+            allowable_size = 0
             data_length = len(data)
             if self.current_size + data_length > self.max_size:
 
@@ -80,8 +88,7 @@ class ByteBuffer():
         with self.cond:
             if length is None or length > self.max_read:
                 length = self.max_read
-
-            data_read = bytes()
+            data_read = ()
             while length > 0:
                 while self.queue.empty():
                     self.cond.wait()
@@ -89,11 +96,13 @@ class ByteBuffer():
                 data_chunk = self.queue.get()
                 if len(data_chunk) <= length:
                     data_read += data_chunk
-                    length -= len(data_chunk)
-                    self.current_size -= len(data_chunk)
+                    length -= len(data_chunk[0])
+                    self.current_size -= len(data_chunk[0])
+                    if self.queue.empty():
+                        break
                 else:
                     data_read += data_chunk[:length]
-                    self.queue.put(data_chunk[length:])
+                    self.queue.put(data_chunk[0][length:])
                     self.current_size -= length
                     break
         return data_read
@@ -101,99 +110,146 @@ class ByteBuffer():
 
 
 
+
 class TCPSocket():
-    def __init__(self):
+    def __init__(self, TTL =3 ):
         self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.ACKSEQ =  None
         self.SEQ =  None
-        self._send_to = None
-        self._recv_from = None
+        self.address = None
         self.connections = {}
         self.buffer = ByteBuffer()
-        self.TTL = None
+        self.TTL = TTL
+        # table is the sliding window
         self.table = {}
         self.recv_data = ByteBuffer()
-        threading.Thread(target=self.handler, daemon=True).start()
+        self.chunk_size = None
+        
 
     
     def buffer_handler(self):
         while True:
             data, addr = self.udp_socket.recvfrom(1024)
-            if addr not in self.connections:
-                self.buffer.add_data(data, addr)
+            if addr not in self.connections.keys():
+                print("add new data")
+                self.buffer.add_data((data, addr))
             else:
-                self.connections[addr]['buffer'].add_data(data, addr)
+                print("update data")
+                self.connections[addr]['buffer'].add_data((data, addr))
 
 
 
     def bind(self, address):
         self.udp_socket.bind(address)
+        self.address = address
+        # threading.Thread(target=self.buffer_handler, daemon=True).start()
 
 
     def accept(self):
+        """
+        Establish connection with a comming TCP request.
+        """
+        # Start buffer handler to listen data
         threading.Thread(target=self.buffer_handler, daemon=True).start()
 
+        # Keep checking
         while True:
             data, addr = self.buffer.read_data(1024)
             header = TCPHeader().from_bytes(data)
-
             if header.SYN == 1 and header.ACK == 0:
-                self.SEQ = random.randint(0, 0xFFFFFFFF)
-                SEQACK = header.SEQ + 1
-                response = TCPHeader(SYN=1, ACK=1, SEQ=self.SEQ ,SEQACK=SEQACK)
-                
+                # Receive 1st handshake from client.
                 buffer = ByteBuffer()
-                self.connections[addr] = {'buffer': buffer, "socket": socket}
-
                 socket = TCPSocket()
+
+                socket.SEQ = random.randint(0, 0xFFFFFFFF)
+                SEQACK = header.SEQ + 1
+                response = TCPHeader(SYN=1, ACK=1, SEQ=socket.SEQ ,SEQACK=SEQACK, PAYLOAD=None)
+            
+                socket.udp_socket = self.udp_socket
                 socket.buffer = buffer
-                socket.SEQ = self.SEQ
-                socket._recv_from = addr
-              
-                socket.send(response)
+                socket.address = addr
+                threading.Thread(target=socket.handler, daemon=True).start()
 
-               
+                self.connections[addr] = {'buffer': buffer, "socket": socket}
+                # Send response to client and start the 2nd handshake
+                socket.send(tcpheader=response)
+                socket.SEQ = socket.SEQ + 1
+                tcpheader, addr = socket.recv()
+                if not tcpheader.PAYLOAD:
+                    socket.ACKSEQ = tcpheader.SEQ + 1
+                else:
+                    socket.ACKSEQ = tcpheader.SEQ + len(tcpheader.PAYLOAD.encode())
+                return socket
 
-    
 
+    def connect(self,  address:(str, int)): # type: ignore
+        """
+        Connet from client to server.
+        params:
+            address:    ip address and port of the destination server.
+        """
+        threading.Thread(target=self.buffer_handler, daemon=True).start()
+        threading.Thread(target=self.handler, daemon=True).start()
+        # 1st handshake
+        self.SEQ = random.randint(0, 0xFFFFFFFF)
+        header = TCPHeader(SYN=1, ACK=0, SEQ=self.SEQ, SEQACK=0)
+        self.address = address
+        self.send(tcpheader=header)
+        self.SEQ = self.SEQ + 1
+        # 2nd handshake
+        tcpheader, addr =  self.recv()
+        # if not tcpheader.PAYLOAD:
+        #     self.ACKSEQ = tcpheader.SEQ + 1
+        # else:
+        #     self.ACKSEQ = tcpheader.SEQ + len(tcpheader.PAYLOAD.encode())
 
-    def connect(self,  address:(str, int)):
-        SEQ = random.randint(0, 0xFFFFFFFF)
-        header = TCPHeader(SYN=1, ACK=0, SEQ=SEQ, SEQACK=0)
-        self._send_to = address
-
-        self.send(header)
-
-        data, addr =  self.recv()
-        # data, addr = self.buffer.read_data(1024)
-        header = TCPHeader().from_bytes(data)
-        
-        if header.SYN == 1 and header.ACK == 1:  # This is a SYN-ACK packet
-            ack_header = TCPHeader(ACK=1)
+        if tcpheader.SYN == 1 and tcpheader.ACK == 1:  # This is a SYN-ACK packet
+            ack_header = TCPHeader(ACK=1, SEQ=self.SEQ, SEQACK=tcpheader.SEQ + 1)
+            self.send(tcpheader=ack_header)
+            self.SEQ = self.SEQ+1
+            
 
     def recv(self):
-        result = ""
-        while True:
-            address = self._recv_from
-            data, addr = self.recv_data.read_data()
-            tcpheader = TCPHeader.from_bytes(data)
-            result = result + tcpheader.PAYLOAD
-        return data
+        data, addr = self.recv_data.read_data()
+        tcpheader = TCPHeader().from_bytes(data)
+        return tcpheader, addr
 
     
 
 
-    def send(self, tcpheader):
-        address = self._send_to
-        self.udp_socket.sendto(tcpheader, address)
+    def send(self, tcpheader: TCPHeader, data=None):
+        if data:
+            address = self.address
+            tcpheader = TCPHeader(SYN=0, FIN=0, ACK=1, SEQ=self.SEQ, SEQACK=self.ACKSEQ,PAYLOAD=data)
+            self.SEQ = self.SEQ + len(data.encode())
+            self.udp_socket.sendto(tcpheader.to_bytes(), address)
+            self.table[tcpheader.SEQ + len(tcpheader.PAYLOAD.encode())] = (tcpheader, self.TTL)
+        else:
+            address = self.address
+            self.udp_socket.sendto(tcpheader.to_bytes(), address)
+            if tcpheader.PAYLOAD:
+                self.table[tcpheader.SEQ + len(tcpheader.PAYLOAD.encode())] = (tcpheader, self.TTL)
+            else:
+                self.table[tcpheader.SEQ + 1] = (tcpheader, self.TTL)
+            print("testing!")
 
-        self.table[tcpheader.SEQ + len(tcpheader.PAYLOAD.encode())] = (tcpheader, 0)
+    def sendall(self) :
+        # 这里需要完成将整个大文件分块传输的过程，以及在乱序的情况下，将包重新排序，以及pipline和sliding窗口的实现，还有拥塞控制
 
-        
-        # threading.Thread(target=self.send_handler, daemon=True).start()
-        # threading.Thread(target=self.timeout_handler, daemon=True).start()
+        #Base版本，滑动窗口为1的串行文件
+        #调用send函数，发送数据
 
-    def sendall():
-        # 这里需要完成整个重传的逻辑，比如哪些块要重传
+        #1. 大文件分块, 给定项目文档的pdf，将其转为bytes，
+        chunk_size = 512
+
+        #2. 循环传输，并写入到本地文件中,串行阻塞式
+
+        for i in chunk_size:
+            self.send()
+            self.recv()
+ 
+
+
         raise  NotImplementedError()
 
 
@@ -205,45 +261,100 @@ class TCPSocket():
         # 3. 查询chacksum，以确定数据是否损坏，损坏的话调用send函数进行重传
         # 4. 如果没有被confirm的TCP，直接重发。如果confirm的TCP，直接不管。（ACKSEQ == TCP.SEQ 情况下重发这个TCP， 如果ACKSEQ == TCP.SEQ + len() 这个TCP任务结束了）
         while True:
+            
             data, addr = self.buffer.read_data(1024)
-            tcpheader = TCPHeader.from_bytes(data)
-
+            tcpheader = TCPHeader().from_bytes(data)
+            
             if self.checksum(tcpheader):
-                if tcpheader.SEQACK in self.table:
+        
+                if tcpheader.ACK == 0:
+                    self.recv_data.add_data((data, addr))
+
+                if tcpheader.SEQACK in self.table.keys():
                     del self.table[tcpheader.SEQACK]
-                    self.recv_data.add_data(data, addr)
-                else:
-                    for i in self.table.keys():
-                        #这里需要修改ACKSEQ为对方的SEQ+len(data)或者data为空的情况下，是SEQ+1
-                        if self.table[i][0].SEQ == tcpheader.SEQACK:
-                            old_tcpheader = self.table[i][0]
-                            if len(tcpheader.PAYLOAD) == 0:
-                                new_tcpheader = TCPHeader(SYN=old_tcpheader.SYN, FIN=old_tcpheader.FIN, ACK=old_tcpheader.ACK, SEQ=old_tcpheader.SEQ, SEQACK= tcpheader.SEQ + 1 , PAYLOAD=old_tcpheader.PAYLOAD)
-                            else:
-                                new_tcpheader = TCPHeader(SYN=old_tcpheader.SYN, FIN=old_tcpheader.FIN, ACK=old_tcpheader.ACK, SEQ=old_tcpheader.SEQ, SEQACK= tcpheader.SEQ + len(tcpheader.PAYLOAD.encode()) , PAYLOAD=old_tcpheader.PAYLOAD)
-                            self.send(new_tcpheader)
-                    else:
-                        continue
+                    self.recv_data.add_data((data, addr))
+
+                # 在现有机制下，如何主要接受对面要求重传的指令？
+                # else:
+                #     for i in self.table.keys():
+                #         if self.table[i][0].SEQ == tcpheader.SEQACK:
+                #             old_tcpheader = self.table[i][0]
+                #             if tcpheader.PAYLOAD:
+                #                 new_tcpheader = TCPHeader(SYN=old_tcpheader.SYN, FIN=old_tcpheader.FIN, ACK=old_tcpheader.ACK, SEQ=old_tcpheader.SEQ, SEQACK= tcpheader.SEQ + 1 , PAYLOAD=old_tcpheader.PAYLOAD)
+                #             else:
+                #                 new_tcpheader = TCPHeader(SYN=old_tcpheader.SYN, FIN=old_tcpheader.FIN, ACK=old_tcpheader.ACK, SEQ=old_tcpheader.SEQ, SEQACK= tcpheader.SEQ + len(tcpheader.PAYLOAD.encode()) , PAYLOAD=old_tcpheader.PAYLOAD)
+                #             self.send(tcpheader=new_tcpheader)
             else:
                 error_response = TCPHeader(SYN=0, FIN=0, ACK=1, SEQ=self.SEQ, SEQACK=tcpheader.SEQ)
-                self.send(error_response)
+                self.send(tcpheader=error_response)
 
-    def checksum(self, tcpheader: TCPHeader):
-        raise  NotImplementedError()
+    # def checksum(self, tcpheader: TCPHeader) -> bool:
+    #     return True
+    #     raise  NotImplementedError()
+
+    def checksum(self, tcpheader: TCPHeader) -> bool:
+        """
+        Compare checksum of both local and received tcp request. If checksum correct, return true, otherwise return false.
+
+        TODO: This function is still need to be verified its correctness.
+        """
+        return True
+        recv_checksum = tcpheader.CHECKSUM
+        data = tcpheader.SYN + tcpheader.FIN + tcpheader.ACK + tcpheader.SEQ + tcpheader.SEQACK + tcpheader.LEN + 0 + tcpheader.PAYLOAD
+        checksum = 0
+        # If the lenght of data is odd number, add an 0 to the end of data to make it become an even number
+        if len(data) % 2 != 0:
+            data += '0'
+        for i in range(0, len(data), 2):
+            word = (data[i] << 8) + data[i + 1]
+            checksum += word
+            # If overflow
+            checksum = (checksum & 0xFFFF) + (checksum >> 16)
+
+        # 1's complement
+        checksum = ~checksum & 0xFFFF
+
+        if checksum == recv_checksum:
+            return True
+        else:
+            return False
+
 
     def timeout_handler(self):
+        """
+        This function is for checking the table and control the timeout.
+        """
         while True:
             for i in self.table.keys():
-                if self.table[i][1] >= self.TTL:
+                if self.table[i][1] < 0:
                     self.send(self.table[i][0])
                 else:
-                    self.table[i][1] = self.table[i][1] + 1
+                    self.table[i][1] = self.table[i][1] - 1
             time.sleep(1)
 
     def set_TTL(self, value):
         self.TTL = value
-        
-    def close():
+
+    def close(self):
+        """
+        Close current TCP connection.
+
+        In TCP 4-way close progress.
+        1st handshake: SEQ, ACK, FIN=1, ACK=1 which means the client want to close the connection
+        2nd handshake: SEQ, ACK, FIN=None, ACK=1 which means the server received the FIN code from the client
+        3rd handshake: SEQ, ACK, FIN=1, ACK=1 which means the client really want to close the connection
+        4nd handshake: SEQ, ACK, FIN=Noe, ACK=1 which means the server confirm to close the connection.
+
+        After this 4-way-handshake, the TCP connection will be terminated. 
+
+        TODO: I don't confirm that how do you implement the exact accept and connet function.
+        So I just list how does the 4-way-handshake work.
+        头大，玛德，睡觉。
+        """
+
+        # Close the connection. And re-create new udp-socket. Or just re-bind  to another address??
+        self.udp_socket.close()
+        self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         raise  NotImplementedError()
 
 
@@ -252,31 +363,12 @@ class TCPSocket():
 if __name__ == '__main__':
     port = 12345
     ip = "127.0.0.1"
-    address = (ip, port)
+    
+    selfport = 12334
+    b_address = (ip, port)
     a = TCPSocket()
-
-
-
-    a = TCPHeader()
-    a.PAYLOAD = 'tesadasdas'
+    a.bind((ip, selfport))
+    a.connect(b_address)
+    while True:
+        tcpheader, addr = a.recv()
     
-    buffer = ByteBuffer()
-    print(buffer.read_data())
-    buffer.add_data(a.to_bytes())
-    
-  
-    # a.bind(address)
-
-
-    # while True:
-    #     client_socket, addr = a.accept()  
-    #     print(f"Connected by {addr}")
-
-        # while True:
-        #     data = client_socket.recv(1024)
-        #     if not data:
-        #         break
-        #     print(f"Received {data.decode()} from {addr}")
-        #     client_socket.send(data)  # Echo back the received data
-
-        # client_socket.close()  # 关闭连接
